@@ -70,6 +70,10 @@ button{font:inherit;color:inherit;cursor:pointer}
 .mapbox{width:100%;aspect-ratio:16/10;max-width:100%;border-radius:12px;overflow:hidden;border:1px solid var(--line);margin-top:16px;background:#1d4d6c}
 .mapbox canvas{width:100%;height:100%;display:block}
 .railmap{margin-top:8px}
+.evrow{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.evrow select{flex:1;min-width:0;padding:8px;border-radius:10px;background:var(--panel,#16181d);color:inherit;border:1px solid var(--line)}
+.evlbl{display:block;margin-top:10px;font-size:12px;color:var(--muted)}
+.evmsg{font-size:12.5px;color:var(--muted);margin:8px 0 0;min-height:1.2em}
 .railmap.pulse{animation:railPulse 1.2s ease-out}
 @keyframes railPulse{0%{box-shadow:0 0 0 0 rgba(255,211,77,.9)}100%{box-shadow:0 0 0 14px rgba(255,211,77,0)}}
 .modtag{font-size:11px;font-weight:700;padding:1px 5px;border-radius:6px;margin-left:4px;white-space:nowrap}
@@ -298,6 +302,16 @@ kbd{font:inherit;font-size:11.5px;font-weight:700;color:var(--muted);border:1px 
       <dl class="stats" id="stats"></dl>
       <h3 id="railMapH" hidden>Territory</h3>
       <div class="mapbox railmap" id="railMapBox" hidden><canvas id="railMap" role="img" aria-label="Your territory on the map"></canvas></div>
+      <details class="more" id="evBox">
+        <summary>Event triggers</summary>
+        <div class="row evrow">
+          <button class="btn solid" type="button" data-ev="bless">🍀 Blessed wheel</button>
+          <button class="btn solid" type="button" data-ev="curse">💀 Cursed wheel</button>
+        </div>
+        <label class="evlbl" for="evFx">Instant effect</label>
+        <div class="row evrow"><select id="evFx"></select><button class="btn solid" type="button" id="evGo">Apply</button></div>
+        <p class="evmsg" id="evMsg" role="status"></p>
+      </details>
       <h3>Luck so far</h3>
       <div class="luck" id="luck"></div>
       <h3>Results</h3>
@@ -1824,6 +1838,31 @@ function paintRailMap() {
   if (paintRailMap.n && paintRailMap.n !== n && !reduceMotion) { box.classList.remove('pulse'); void box.offsetWidth; box.classList.add('pulse'); }
   paintRailMap.n = n;
 }
+const Events = (() => {
+  const fx = [...BLESSED.filter(b => !b.double).map(b => ['🍀', b]), ...CURSED.filter(b => !b.double).map(b => ['💀', b])];
+  const msg = t => { $('evMsg').textContent = t; };
+  function wheel(kind) {
+    if (!R || current().type === 'final') return msg('Start a new country first.');
+    const name = kind === 'bless' ? 'Blessed' : 'Cursed';
+    if (R.streak && R.streak.kind === kind) { R.streak.left++; saveDraft(); return msg(`${name} wheel: one more spin added.`); }
+    R.pending = kind; saveDraft();
+    if (R.phase === 'landed' && current().type === 'wheel' && !R.streak) { msg(`${name} wheel triggered.`); return advance(); }
+    msg(`${name} wheel queued: it spins after the current wheel.`);
+  }
+  function apply() {
+    if (!R || R.phase === 'spinning') return msg('Wait for the wheel to stop.');
+    const b = fx[+$('evFx').value][1], f = trackFx(() => b.run());
+    msg(`${b.name}: ${withFx(typeof f.ret === 'string' ? f.ret : b.text, f.text)}`);
+    R.log.push({ icon: '⚡', title: 'Triggered event', result: b.name, tier: null });
+    saveDraft(); paintAll();
+  }
+  function init() {
+    $('evFx').innerHTML = fx.map(([i, b], k) => `<option value="${k}">${i} ${esc(b.name)} (${esc(b.text)})</option>`).join('');
+    document.querySelectorAll('[data-ev]').forEach(el => el.addEventListener('click', () => { Sound.unlock(); wheel(el.dataset.ev); }));
+    $('evGo').addEventListener('click', apply);
+  }
+  return { init };
+})();
 function paintDock() {
   const go = $('go');
   $('dock').hidden = view === 'world';
@@ -2607,6 +2646,7 @@ if (document.fonts && document.fonts.load) document.fonts.load('600 16px "Open S
 window.claude?.hot?.snapshot?.(() => ({ run: R, view }));
 paintSound();
 Fun.init();
+Events.init();
 Store.init();
 setTimeout(() => MapArt.ensure(), 400);
 window.claude?.hot?.ready ? window.claude.hot.ready(start) : start(window.claude?.hot?.data ?? {});
