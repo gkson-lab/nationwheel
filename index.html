@@ -69,6 +69,12 @@ button{font:inherit;color:inherit;cursor:pointer}
 .wheelwrap canvas{width:100%;height:100%;display:block;cursor:pointer}
 .mapbox{width:100%;aspect-ratio:16/10;max-width:100%;border-radius:12px;overflow:hidden;border:1px solid var(--line);margin-top:16px;background:#1d4d6c}
 .mapbox canvas{width:100%;height:100%;display:block}
+.railmap{margin-top:8px}
+.railmap.pulse{animation:railPulse 1.2s ease-out}
+@keyframes railPulse{0%{box-shadow:0 0 0 0 rgba(255,211,77,.9)}100%{box-shadow:0 0 0 14px rgba(255,211,77,0)}}
+.modtag{font-size:11px;font-weight:700;padding:1px 5px;border-radius:6px;margin-left:4px;white-space:nowrap}
+.modtag.up{color:#3ddc97;background:rgba(61,220,151,.12)}
+.modtag.down{color:#ff7b72;background:rgba(255,123,114,.12)}
 
 /* rail */
 .rail{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;position:sticky;top:16px;min-width:0}
@@ -290,6 +296,8 @@ kbd{font:inherit;font-size:11.5px;font-weight:700;color:var(--muted);border:1px 
       <h2 id="railName"></h2>
       <p class="formal" id="railFormal"></p>
       <dl class="stats" id="stats"></dl>
+      <h3 id="railMapH" hidden>Territory</h3>
+      <div class="mapbox railmap" id="railMapBox" hidden><canvas id="railMap" role="img" aria-label="Your territory on the map"></canvas></div>
       <h3>Luck so far</h3>
       <div class="luck" id="luck"></div>
       <h3>Results</h3>
@@ -467,7 +475,11 @@ const likeArea = a => `about the size of ${nearestRef(REF.area, a)[0]}`;
 const likePop = p => { const r = nearestRef(REF.pop, p); return `similar to ${r[0]} (${fmtCount(r[1])})`; };
 const likeGdp = g => { const r = nearestRef(REF.gdp, g); return `similar to ${r[0]} (${fmtMoney(r[1])})`; };
 const likeHdi = h => { const r = nearestRef(REF.hdi, h, false); return `like ${r[0]} (${r[1].toFixed(2)})`; };
-const likeActive = p => { const r = nearestRef(REF.active, p); return `${r[0]} keeps about ${r[1]}% on active duty`; };
+const likeActive = p => {
+  const top = REF.active[REF.active.length - 1];
+  if (p >= top[1] * 1.5) return `That is ${trimNum(p / top[1], 1)}× the share ${top[0]} keeps on active duty (${top[1]}%)`;
+  const r = nearestRef(REF.active, p); return `${r[0]} keeps about ${r[1]}% on active duty`;
+};
 
 /* ---------- world: six continents, each with its own climate, terrain, regional impacts and resources ---------- */
 const W = 160, H = 96, CELLS = W * H, WORLD_SEED = 7341;
@@ -703,9 +715,17 @@ function placeTerritory(ri, inland, n, owner) {
   for (let t = 0; t < 16 && best.length < n; t++) { const got = grow([pickOne(seeds)], n, ok); if (got.length > best.length) best = got; }
   return fillGaps(best, n, ok, Prov.byRegion[ri]);
 }
+// territory bonuses scale the map directly: ×2 land means about twice the provinces, and always at least one more
+function provsTarget() {
+  const base = provincesFor(R.picks.size ? R.picks.size.value : 40000), m = R.mods.area;
+  let n = Math.max(1, Math.round(base * m));
+  if (m > 1.001 && n <= base) n = base + 1;
+  if (m < .999 && base > 1 && n >= base) n = base - 1;
+  return n;
+}
 function resizeTerritory() {
   if (!Prov || !R.provs || !R.provs.length) return;
-  const n = provincesFor(D(R).area);
+  const n = provsTarget(); R.provsWanted = n;
   if (n < R.provs.length) {
     const [cx, cy] = centroidOf(R.provs), d = k => (Prov.xs[k] - cx) ** 2 + (Prov.ys[k] - cy) ** 2;
     const drop = new Set(R.provs.slice().sort((a, b) => d(b) - d(a)).slice(0, R.provs.length - n));
@@ -714,6 +734,11 @@ function resizeTerritory() {
     const owner = buildOwner(), ri = R.picks.region, inland = !!R.picks.landlocked;
     const ok = k => Prov.kind[k] === ri && !owner[k] && (!inland || !Prov.coastal[k]);
     R.provs = fillGaps(grow(R.provs, n, ok), n, ok, Prov.byRegion[ri]);
+    // the home region is full: keep growing into any free land nearby
+    if (R.provs.length < n) {
+      const okAny = k => Prov.kind[k] >= 0 && !owner[k] && (!inland || !Prov.coastal[k]);
+      R.provs = fillGaps(grow(R.provs, n, okAny), n, okAny, Prov.landIds);
+    }
   }
 }
 
@@ -1040,6 +1065,8 @@ const SIZE_VALUES = [500, 1000, 2000, 3000, 5000, 7500, 10000, 15000, 20000, 300
 const SIZE_W = logWeights(SIZE_VALUES, 5, .95);
 const DENS_VALUES = Array.from({ length: 36 }, (_, i) => Math.pow(10, i / 35 * Math.log10(25000)));
 const ACTIVE_VALUES = Array.from({ length: 80 }, (_, i) => .02 * Math.pow(250, i / 79));
+// a rare total-mobilization slice past the curve: always 1% of the wheel, whatever the army
+const ACTIVE_MAX = 10, ACTIVE_MAX_P = .01;
 const PC_VALUES = Array.from({ length: 40 }, (_, i) => 300 * Math.pow(140000 / 300, i / 39));
 const HDI_VALUES = Array.from({ length: 35 }, (_, i) => Math.round((.3 + i * .02) * 100) / 100);
 // bad finds are rarer in the lists, so they weigh more and good and bad rolls come up about equally often
@@ -1089,6 +1116,24 @@ function D(r) {
   if (r.picks.army != null) d.armyQ = ARMY[r.picks.army].q;
   return d;
 }
+const FX_STATS = [['area', 'Territory', v => fmtKm(v)], ['pop', 'Population', v => fmtPop(v)], ['gdp', 'GDP', v => fmtMoney(v)], ['troops', 'Troops', v => fmtPop(v)]];
+function trackFx(fn) {
+  const m0 = { ...R.mods }, d0 = D(R), p0 = R.provs ? R.provs.length : 0;
+  const ret = fn();
+  const d1 = D(R), p1 = R.provs ? R.provs.length : 0, out = [];
+  for (const [k, name, f] of FX_STATS) {
+    if (Math.abs(R.mods[k] - m0[k]) < 1e-9) continue;
+    if (d0[k] != null && d1[k] != null) out.push(`${name} ${f(d0[k])} → ${f(d1[k])}`);
+    else out.push(`${name} bonus saved for when that wheel is spun`);
+  }
+  if (Math.abs(R.mods.hdi - m0.hdi) > 1e-9 && d0.hdi == null) out.push('HDI bonus saved for the HDI wheel');
+  if (Math.abs(R.mods.intel - m0.intel) > 1e-9 && d0.intel == null) out.push('Spy bonus saved for the spy wheel');
+  if (p1 !== p0) out.push(`Map: ${p0} → ${p1} province${p1 === 1 ? '' : 's'}`);
+  else if (R.provs && Math.abs(R.mods.area - m0.area) > 1e-9 && R.provsWanted > p1) out.push('No free land left nearby to grow into');
+  return { ret, text: out.join(' · ') };
+}
+const withFx = (base, fx) => [base, fx].filter(Boolean).join(' · ');
+const modNote = (k, label) => Math.abs(R.mods[k] - 1) > 1e-9 ? ` Includes ${R.mods[k] >= 2 ? '×' + trimNum(R.mods[k], 2) : fmtPct(R.mods[k] - 1)} ${label} from earlier effects.` : '';
 function applyEff(eff) {
   for (const k of ['pop', 'area', 'gdp', 'troops']) if (eff[k] != null) R.mods[k] *= eff[k];
   if (eff.hdi) R.mods.hdi += eff.hdi;
@@ -1136,7 +1181,7 @@ const WHEELS = {
       const w = logWeights(DENS_VALUES, mu, .45);
       return massTiers(DENS_VALUES.map((dens, i) => { const base = a * dens; return { label: fmtPop(base * R.mods.pop), base, dens, w: w[i] }; }));
     },
-    land: s => { R.picks.pop = { base: s.base }; const p = s.base * R.mods.pop; return { result: fmtPop(p), note: `${fmtSmall(s.dens * R.mods.pop)} people per km², ${likePop(p)}` }; } },
+    land: s => { R.picks.pop = { base: s.base }; const p = s.base * R.mods.pop; return { result: fmtPop(p), note: `${fmtSmall(s.dens * R.mods.pop)} people per km², ${likePop(p)}.${modNote('pop', 'population')}` }; } },
   ideology: { icon: '🗽', title: 'Ideology', color: '#3ddc97', style: 'palette', counts: false,
     sub: () => 'Decides who holds the power',
     slices: () => {
@@ -1170,7 +1215,7 @@ const WHEELS = {
   impact: { icon: '🧭', title: () => `Regional Impact (${REGIONS[R.picks.region].name})`, color: '#7aa7ff', style: 'split', counts: true,
     sub: () => 'A bonus or penalty from your continent',
     slices: () => REGIONS[R.picks.region].impacts.map(m => ({ label: m.name, w: 1, tier: m.good ? 'good' : 'bad', eff: m.eff, good: m.good })),
-    land: s => { applyEff(s.eff); return { result: s.label, note: effText(s.eff) }; } },
+    land: s => { const fx = trackFx(() => applyEff(s.eff)); return { result: s.label, note: withFx(effText(s.eff), fx.text) }; } },
   landlocked: { icon: '⚓', title: 'Are you landlocked?', color: '#6b9bff', style: 'palette', counts: true,
     sub: () => 'Cut off from the sea. About 1 in 4 real countries is.',
     slices: () => {
@@ -1192,9 +1237,11 @@ const WHEELS = {
     sub: () => ARMY[R.picks.army].name,
     slices: () => {
       const med = ACTIVE_MED[R.picks.army] * (IDEO[R.picks.ideology].army >= 2 ? 1.5 : 1), w = logWeights(ACTIVE_VALUES, Math.log10(med), .25);
-      return massTiers(ACTIVE_VALUES.map((v, i) => ({ label: fmtActive(v), value: v, w: w[i] })));
+      const list = ACTIVE_VALUES.map((v, i) => ({ label: fmtActive(v), value: v, w: w[i] })), tot = list.reduce((a, s) => a + s.w, 0);
+      list.push({ label: fmtActive(ACTIVE_MAX), value: ACTIVE_MAX, w: tot * ACTIVE_MAX_P / (1 - ACTIVE_MAX_P) });
+      return massTiers(list);
     },
-    land: s => { R.picks.active = s.value; return { result: fmtActive(s.value), note: `About ${fmtPop(D(R).troops)} troops. ${likeActive(s.value)}.` }; } },
+    land: s => { R.picks.active = s.value; return { result: fmtActive(s.value), note: `About ${fmtPop(D(R).troops)} troops. ${likeActive(s.value)}.${modNote('troops', 'troops')}` }; } },
   intel: { icon: '🕵️', title: 'Secret Services', color: '#c9a2ff', style: 'violet', counts: true,
     sub: () => 'Decides how far your spies can reach', accent: () => '#a874ff',
     slices: () => {
@@ -1215,7 +1262,7 @@ const WHEELS = {
       const w = logWeights(PC_VALUES, mu, .42);
       return massTiers(PC_VALUES.map((pc, i) => { const base = d.pop * pc, v = base * R.mods.gdp * d.resMult; return { label: fmtMoneyShort(v), value: v, base, w: w[i] }; }));
     },
-    land: s => { R.picks.gdp = { base: s.base }; const d = D(R); return { result: fmtMoney(d.gdp), note: `${fmtUSD(d.pc)} per person, ${likeGdp(d.gdp)}` }; } },
+    land: s => { R.picks.gdp = { base: s.base }; const d = D(R); return { result: fmtMoney(d.gdp), note: `${fmtUSD(d.pc)} per person, ${likeGdp(d.gdp)}.${modNote('gdp', 'GDP')}` }; } },
   res: { icon: '🛢️', title: 'Resources', color: '#8fd3ff', style: 'cream', counts: true,
     sub: () => `${REGIONS[R.picks.region].name} · spin ${R.resDone + 1} of ${R.resTotal} · more land, more spins`,
     slices: () => {
@@ -1246,11 +1293,11 @@ const WHEELS = {
       const h = D(R).hdi, base = { good: .9, neutral: 1, bad: 1.4, awful: 1.3 };
       return BACKGROUNDS.filter(b => !(b.coast && R.picks.landlocked)).map(b => ({ label: b.name, w: base[b.tier] * Math.exp(b.dev * (h - .6) * 5), tier: b.tier, eff: b.eff }));
     },
-    land: s => { applyEff(s.eff); R.picks.background = s.label; return { result: s.label, note: effText(s.eff) || 'Just a good story to tell' }; } },
+    land: s => { const fx = trackFx(() => applyEff(s.eff)); R.picks.background = s.label; return { result: s.label, note: withFx(effText(s.eff), fx.text) || 'Just a good story to tell' }; } },
   great: { icon: '🧠', title: 'Great People', color: '#a9d6ff', style: 'silver', counts: true,
     sub: () => 'Decides if your nation has a brilliant mind',
     slices: () => { const d = D(R); return GREAT.map(p => { const L = TIER[p.tier].v; return { label: p.name, w: p.w * Math.exp(L * (d.hdi - .6) * 3 + L * (Math.log10(d.pop) - 7) * .25), tier: p.tier, eff: p.eff }; }); },
-    land: s => { applyEff(s.eff); R.picks.great = s.label; return { result: s.label, note: effText(s.eff) || 'No bonus this time' }; } },
+    land: s => { const fx = trackFx(() => applyEff(s.eff)); R.picks.great = s.label; return { result: s.label, note: withFx(effText(s.eff), fx.text) || 'No bonus this time' }; } },
   bless: { icon: '🍀', title: 'Blessed Wheel', color: '#ffd34d', style: 'blessed', counts: false,
     sub: () => 'Your Blessed streak hit 3. Spin for something overpowered.',
     slices: () => BLESSED.map(b => ({ label: b.name, w: 1, fx: b })),
@@ -1265,7 +1312,7 @@ function streakLand(s) {
   const b = s.fx; let note = b.text;
   R.streak.spins++; R.streak.left--;
   if (b.double) R.streak.left = Math.min(R.streak.left + 2, 5 - R.streak.spins);
-  else { const t = b.run(); if (typeof t === 'string') note = t; }
+  else { const fx = trackFx(() => b.run()); if (typeof fx.ret === 'string') note = fx.ret; note = withFx(note, fx.text); }
   if (R.streak.left > 0) note += ` · ${R.streak.left} spin${R.streak.left > 1 ? 's' : ''} left`;
   return { result: b.name, note };
 }
@@ -1624,7 +1671,7 @@ async function enterMap() {
   await Promise.race([Store.ready, wait(10500)]);
   await MapArt.ensure();
   if (!R.provs) {
-    R.provsWanted = provincesFor(D(R).area);
+    R.provsWanted = provsTarget();
     R.provs = placeTerritory(R.picks.region, !!R.picks.landlocked, R.provsWanted, buildOwner());
   }
   $('mNote').textContent = mapNote();
@@ -1754,11 +1801,28 @@ function paintRail() {
     ['HDI', d.hdi != null ? d.hdi.toFixed(2) : null], ['Spy level', d.intel != null ? String(d.intel) : (R.forced.intel ? `${R.forced.intel.level} (locked)` : null)],
     ['Resources', R.resources.length ? R.resources.map(x => x.name).join(', ') : null],
   ];
-  $('stats').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd class="${v ? '' : 'no'}">${v ? esc(v) : 'not yet'}</dd>`).join('');
+  const modKey = { Area: 'area', Population: 'pop', Troops: 'troops', GDP: 'gdp' };
+  const tag = k => { const mk = modKey[k]; if (!mk || Math.abs(R.mods[mk] - 1) < 1e-9) return ''; const t = R.mods[mk] >= 2 ? '×' + trimNum(R.mods[mk], 2) : fmtPct(R.mods[mk] - 1); return ` <span class="modtag ${R.mods[mk] > 1 ? 'up' : 'down'}">${t}</span>`; };
+  $('stats').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd class="${v ? '' : 'no'}">${v ? esc(v) : (modKey[k] && tag(k) ? 'waiting' : 'not yet')}${tag(k)}</dd>`).join('');
+  paintRailMap();
   Fun.paintLuck();
   $('log').innerHTML = R.log.length ? R.log.map(l => `<li><span aria-hidden="true">${l.icon}</span><span><span class="lt">${esc(l.title)}</span><span class="lr">${esc(l.result)}</span></span>${l.tier ? `<span class="tg ${TIER[l.tier].cls}">${TIER[l.tier].label}</span>` : '<span></span>'}</li>`).join('')
     : '<li class="empty">Your results show up here as the wheels land.</li>';
   const lg = $('log'); lg.scrollTop = lg.scrollHeight;
+}
+function paintRailMap() {
+  const box = $('railMapBox'); if (!box) return;
+  const n = R && R.provs ? R.provs.length : 0, show = !!(n && Prov && MapArt.ready);
+  box.hidden = !show; $('railMapH').hidden = !show;
+  if (!show) { paintRailMap.n = 0; return; }
+  const cur = current();
+  if (cur.type === 'map' && R.phase === 'spinning') return;
+  const cv = $('railMap'), aspect = sizeCanvas(cv), me = myTerritory();
+  MapArt.paint([...savedTerritories(null).filter(x => x.id !== R.id), me]);
+  MapArt.draw(cv, MapArt.focusRect(R.provs, aspect), { names: [me] });
+  $('railMapH').textContent = `Territory · ${n} province${n === 1 ? '' : 's'}`;
+  if (paintRailMap.n && paintRailMap.n !== n && !reduceMotion) { box.classList.remove('pulse'); void box.offsetWidth; box.classList.add('pulse'); }
+  paintRailMap.n = n;
 }
 function paintDock() {
   const go = $('go');
@@ -2328,6 +2392,7 @@ const Fun = (() => {
     if (key === 'landlocked') return s.v ? 'No beaches. The navy is now a rowing club on the lake.' : 'Sea breeze, fishing boats and a harbor full of gossip.';
     if (key === 'army' && s.ai === 0) return 'The national defense plan is a strongly worded letter.';
     if (key === 'army' && s.ai === ARMY.length - 1) return 'The generals have requested a larger map of the world.';
+    if (key === 'active' && s.value >= ACTIVE_MAX) return 'One citizen in ten is in uniform. The parade will take all week.';
     if (key === 'intel' && s.level === INTEL_MAX) return 'They already knew you were going to spin that.';
     if (key === 'intel' && s.level === 0) return 'The secret service is one man and he is on holiday.';
     if (key === 'bless') return 'The heavens open. Fortune smiles on the bold.';
