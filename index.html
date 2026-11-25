@@ -71,8 +71,13 @@ button{font:inherit;color:inherit;cursor:pointer}
 .mapbox canvas{width:100%;height:100%;display:block}
 .railmap{margin-top:8px}
 .evrow{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
-.evrow select{flex:1;min-width:0;padding:8px;border-radius:10px;background:var(--panel,#16181d);color:inherit;border:1px solid var(--line)}
-.evpanel{max-width:540px;margin:12px auto 110px;text-align:left}
+.evrow select{flex:1 1 0;width:0;min-width:0;max-width:100%;padding:8px;border-radius:10px;background:var(--panel,#16181d);color:inherit;border:1px solid var(--line)}
+.evpanel{max-width:540px;width:100%;box-sizing:border-box;min-width:0;margin:12px auto 110px;text-align:left}
+.wdetail{max-width:540px;margin:10px auto 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;text-align:left}
+.wdetail div{background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:10px;padding:8px 10px;min-width:0}
+.wdetail dt{font-size:11.5px;color:var(--muted);margin:0}
+.wdetail dd{margin:2px 0 0;font-weight:700;font-size:14px;overflow-wrap:anywhere}
+.evdanger{border-color:rgba(255,93,93,.5)!important;color:#ff7b72!important}
 .evlbl{display:block;margin-top:10px;font-size:12px;color:var(--muted)}
 .evmsg{font-size:12.5px;color:var(--muted);margin:8px 0 0;min-height:1.2em}
 .railmap.pulse{animation:railPulse 1.2s ease-out}
@@ -283,6 +288,7 @@ kbd{font:inherit;font-size:11.5px;font-weight:700;color:var(--muted);border:1px 
         <p class="tag" id="wTag"></p>
         <div class="wheelwrap" id="wheelWrap"><canvas id="wheel" role="img" aria-label="Wheel"></canvas></div>
         <p class="quip" id="wQuip"></p>
+        <dl class="wdetail" id="wDetail" hidden></dl>
       <details class="more evpanel" id="evBox" open>
         <summary>⚡ Event triggers</summary>
         <div class="row evrow">
@@ -291,6 +297,10 @@ kbd{font:inherit;font-size:11.5px;font-weight:700;color:var(--muted);border:1px 
         </div>
         <label class="evlbl" for="evFx">Instant effect</label>
         <div class="row evrow"><select id="evFx"></select><button class="btn solid" type="button" id="evGo">Apply</button></div>
+        <label class="evlbl" for="evStat">Double a stat</label>
+        <div class="row evrow"><select id="evStat"><option value="area">Territory</option><option value="pop">Population</option><option value="gdp">GDP</option><option value="troops">Troops</option><option value="hdi">HDI</option><option value="intel">Spy level</option></select><button class="btn solid" type="button" id="evDouble">×2</button></div>
+        <label class="evlbl">World</label>
+        <div class="row evrow"><button class="btn solid evdanger" type="button" id="evReset">🌍 Reset world &amp; new map</button></div>
         <p class="evmsg" id="evMsg" role="status"></p>
       </details>
       </div>
@@ -331,6 +341,7 @@ kbd{font:inherit;font-size:11.5px;font-weight:700;color:var(--muted);border:1px 
     <div class="whead">
       <h1>My world</h1>
       <p class="wstatus" id="wStatus">Loading your saved map…</p>
+      <button class="btn solid evdanger" type="button" id="worldReset" style="margin-top:8px">🌍 Reset world &amp; new map</button>
     </div>
     <div class="worldmap"><canvas id="mapWorld" role="img" aria-label="World map with your saved countries"></canvas><div class="mapmsg" id="mapMsg" hidden></div></div>
     <div class="worldgrid">
@@ -497,7 +508,9 @@ const likeActive = p => {
 };
 
 /* ---------- world: six continents, each with its own climate, terrain, regional impacts and resources ---------- */
-const W = 160, H = 96, CELLS = W * H, WORLD_SEED = 7341;
+const W = 160, H = 96, CELLS = W * H;
+// 7341 is the original world; resetting the world picks a new seed and reshapes the continents
+const WORLD_SEED = (() => { const v = parseInt(readPref('seed', ''), 10); return Number.isFinite(v) && v > 0 ? v : 7341; })();
 // resource lists read "Name:GDP multiplier:tier" with optional ":sea" (coast only) or ":hdi0.02"
 const TIER_CODE = { L: 'legendary', G: 'good', N: 'neutral', B: 'bad', A: 'awful' };
 function pool(spec) {
@@ -603,6 +616,9 @@ const World = (() => {
   const noises = REGIONS.map((_, i) => makeNoise(WORLD_SEED + i * 101));
   const warpX = makeNoise(WORLD_SEED + 991), warpY = makeNoise(WORLD_SEED + 1993);
   const fields = REGIONS.map(() => new Float32Array(CELLS));
+  const jr = mulberry32(WORLD_SEED * 7 + 3), custom = WORLD_SEED !== 7341;
+  const shapes = REGIONS.map(g => custom ? { ...g.shape, cx: clamp(g.shape.cx + (jr() - .5) * .14, .14, .86), cy: clamp(g.shape.cy + (jr() - .5) * .16, .16, .84),
+    rx: g.shape.rx * (.85 + jr() * .3), ry: g.shape.ry * (.85 + jr() * .3), amp: (g.shape.amp || 0) * (.85 + jr() * .35) } : g.shape);
   const region = new Int8Array(CELLS).fill(-1);
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     const u0 = (x + .5) / W, v0 = (y + .5) / H, k = y * W + x;
@@ -611,7 +627,7 @@ const World = (() => {
     const edge = Math.min(u0, 1 - u0, v0, 1 - v0);
     let best = -9, bi = -1;
     for (let i = 0; i < NR; i++) {
-      const S = REGIONS[i].shape;
+      const S = shapes[i];
       const dx = (u - S.cx) / S.rx, dy = (v - S.cy) / S.ry, d = Math.sqrt(dx * dx + dy * dy);
       let f = S.islands
         ? Math.min(1 - d, .35) * .9 + (fbm(noises[i], u * S.freq, v * S.freq * .6, 3) - .585) * 3.2
@@ -689,8 +705,8 @@ if (!Prov) $('libError').hidden = false;
 
 /* ---------- territory placement over provinces ---------- */
 const provincesFor = area => Math.max(1, Math.round(Math.pow(area / 40000, .8)));
-const sizeTier = a => a < 5000 ? 'micro' : a < 50000 ? 'small' : a < 300000 ? 'mid' : a < 1.5e6 ? 'large' : a < 5e6 ? 'huge' : 'cont';
-const SIZE_NAMES = { micro: 'City-state', small: 'Small country', mid: 'Mid-sized country', large: 'Large country', huge: 'Huge country', cont: 'Continent-sized country' };
+const sizeTier = a => a < 5000 ? 'micro' : a < 50000 ? 'small' : a < 300000 ? 'mid' : a < 1.5e6 ? 'large' : a < 5e6 ? 'huge' : a < 2e7 ? 'cont' : 'mega';
+const SIZE_NAMES = { micro: 'City-state', small: 'Small country', mid: 'Mid-sized country', large: 'Large country', huge: 'Huge country', cont: 'Continent-sized country', mega: 'Multi-continental empire' };
 function buildOwner() { const o = new Int32Array(Prov ? Prov.N : 1); Store.nations.forEach((n, i) => { for (const k of n.provinces) if (k < o.length) o[k] = i + 1; }); return o; }
 function freeCount(ri, owner, inland) { if (!Prov) return 0; let c = 0; for (const k of Prov.byRegion[ri]) if (!owner[k] && (!inland || !Prov.coastal[k])) c++; return c; }
 function coastFree(ri, owner) { if (!Prov) return 0; let c = 0; for (const k of Prov.byRegion[ri]) if (!owner[k] && Prov.coastal[k]) c++; return c; }
@@ -728,7 +744,10 @@ function placeTerritory(ri, inland, n, owner) {
   if (!seeds.length) return [];
   let best = [];
   for (let t = 0; t < 16 && best.length < n; t++) { const got = grow([pickOne(seeds)], n, ok); if (got.length > best.length) best = got; }
-  return fillGaps(best, n, ok, Prov.byRegion[ri]);
+  best = fillGaps(best, n, ok, Prov.byRegion[ri]);
+  // giant empires spill past their home region into any free land
+  if (best.length < n) { const okAny = k => Prov.kind[k] >= 0 && !owner[k] && (!inland || !Prov.coastal[k]); best = fillGaps(grow(best, n, okAny), n, okAny, Prov.landIds); }
+  return best;
 }
 // territory bonuses scale the map directly: ×2 land means about twice the provinces, and always at least one more
 function provsTarget() {
@@ -1076,7 +1095,7 @@ const CURSED = [
 // round numbers like the source wheels; the odds follow the real spread of country sizes (median near 100 000 km²)
 const SIZE_VALUES = [500, 1000, 2000, 3000, 5000, 7500, 10000, 15000, 20000, 30000, 40000, 50000, 65000, 80000, 100000, 125000, 150000, 175000,
   200000, 250000, 300000, 350000, 400000, 450000, 500000, 600000, 700000, 800000, 900000, 1000000, 1250000, 1500000, 2000000, 2500000,
-  3000000, 4000000, 5000000, 7500000, 10000000, 17000000];
+  3000000, 4000000, 5000000, 7500000, 10000000, 17000000, 25000000, 40000000, 60000000];
 const SIZE_W = logWeights(SIZE_VALUES, 5, .95);
 const DENS_VALUES = Array.from({ length: 36 }, (_, i) => Math.pow(10, i / 35 * Math.log10(25000)));
 const ACTIVE_VALUES = Array.from({ length: 80 }, (_, i) => .02 * Math.pow(250, i / 79));
@@ -1086,7 +1105,7 @@ const PC_VALUES = Array.from({ length: 40 }, (_, i) => 300 * Math.pow(140000 / 3
 const HDI_VALUES = Array.from({ length: 35 }, (_, i) => Math.round((.3 + i * .02) * 100) / 100);
 // bad finds are rarer in the lists, so they weigh more and good and bad rolls come up about equally often
 const RES_W = { legendary: .6, good: .9, neutral: 1.1, bad: 2.4, awful: 2 };
-const resCount = a => a < 10000 ? 1 : a < 100000 ? 2 : a < 500000 ? 3 : a < 2e6 ? 4 : a < 6e6 ? 5 : 6;
+const resCount = a => a < 10000 ? 1 : a < 100000 ? 2 : a < 500000 ? 3 : a < 2e6 ? 4 : a < 6e6 ? 5 : a < 2e7 ? 6 : 7;
 const hdiBand = h => h < .55 ? 'Low' : h < .7 ? 'Medium' : h < .8 ? 'High' : 'Very high';
 
 function massTiers(slices) {
@@ -1583,7 +1602,7 @@ function enterWheel(key) {
   const def = WHEELS[key];
   showScreen('wheel'); header(def);
   const r = $('wResult'); r.textContent = '?'; r.className = 'result wait';
-  $('wNote').textContent = ''; $('wTag').textContent = ''; $('wTag').className = 'tag';
+  $('wNote').textContent = ''; $('wTag').textContent = ''; $('wTag').className = 'tag'; $('wDetail').hidden = true;
   $('wQuip').innerHTML = '';
   Wheel.resize();
   const slices = def.slices();
@@ -1626,7 +1645,8 @@ async function spinNow() {
   const tag = streakTag(def, s, before);
   const result = out.result || s.label;
   R.log.push({ icon: def.icon, title: titleOf(def), result, tier: def.counts && !s.forced ? s.tier : null });
-  R.screen = { key, slices: slices.map(x => ({ label: x.label, w: x.w, color: x.color })), winner: idx, rot: Wheel.rot, result, note: out.note || '', tag };
+  const details = wheelDetails(key, s, slices, idx);
+  R.screen = { details, key, slices: slices.map(x => ({ label: x.label, w: x.w, color: x.color })), winner: idx, rot: Wheel.rot, result, note: out.note || '', tag };
   R.phase = 'landed';
   showLanded(R.screen);
   $('announce').textContent = `${titleOf(def)}: ${result}. ${out.note || ''}`;
@@ -1637,6 +1657,29 @@ function showLanded(sc) {
   const r = $('wResult'); r.textContent = sc.result; r.className = 'result';
   $('wNote').textContent = sc.note;
   $('wTag').textContent = sc.tag ? sc.tag.text : ''; $('wTag').className = 'tag ' + (sc.tag ? sc.tag.cls : '');
+  const dl = $('wDetail'), rows = sc.details || [];
+  dl.innerHTML = rows.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join(''); dl.hidden = !rows.length;
+}
+const HDI_BAND = h => h >= .8 ? 'Very high' : h >= .7 ? 'High' : h >= .55 ? 'Medium' : 'Low';
+function wheelDetails(key, s, slices, idx) {
+  const d = D(R), tot = slices.reduce((a, x) => a + (x.w || 0), 0), p = tot ? (slices[idx].w || 0) / tot : 0;
+  const rarer = tot ? slices.filter(x => (x.w || 0) < (slices[idx].w || 0)).length : 0;
+  const rows = [['Chance of this slice', p >= .01 ? (p * 100).toFixed(1) + '%' : (p * 100).toFixed(2) + '%'], ['Odds', p > 0 ? `1 in ${trimNum(1 / p, p > .1 ? 1 : 0)}` : '—']];
+  if (slices.length > 2) rows.push(['Slices on the wheel', `${slices.length} (${rarer} rarer than this)`]);
+  if (s.tier && TIER[s.tier]) rows.push(['Roll quality', TIER[s.tier].label]);
+  const add = (k, v) => { if (v != null && v !== '') rows.push([k, v]); };
+  if (key === 'size' && d.area) { add('In square miles', fmtCount(Math.round(d.area / 2.59)) + ' mi²'); add('Share of Earth\'s land', (d.area / 1.49e8 * 100).toFixed(d.area > 1.49e6 ? 1 : 3) + '%'); add('Map provinces (about)', String(provincesFor(d.area))); add('Resource spins', String(resCount(d.area))); add('Class', SIZE_NAMES[sizeTier(d.area)]); }
+  if (key === 'pop' && d.pop) { add('Density', fmtSmall(d.pop / d.area) + ' per km²'); add('Share of humanity', (d.pop / 8.1e9 * 100).toFixed(d.pop > 8.1e7 ? 1 : 3) + '%'); add('People per province', fmtPop(d.pop / Math.max(1, provincesFor(d.area)))); }
+  if (key === 'active' && d.troops) { add('Total troops', fmtPop(d.troops)); add('Troops per km²', fmtSmall(d.troops / d.area)); add('Civilians per soldier', fmtCount(Math.round(d.pop / d.troops))); add('Army type', ARMY[R.picks.army].name); }
+  if (key === 'gdp' && d.gdp) { add('Per person', fmtUSD(d.pc)); add('Share of world GDP', (d.gdp / 1.05e14 * 100).toFixed(d.gdp > 1e12 ? 1 : 3) + '%'); if (d.troops) add('Spending per soldier (2%)', fmtUSD(d.gdp * .02 / d.troops)); }
+  if (key === 'hdi' && d.hdi != null) { add('HDI band', HDI_BAND(d.hdi)); add('Life expectancy (about)', Math.round(45 + d.hdi * 37) + ' years'); add('Years of schooling (about)', (d.hdi * 14).toFixed(1)); }
+  if (key === 'intel' && d.intel != null) add('Spy network', INTEL[d.intel].name);
+  if (key === 'res') { add('Resources so far', String(R.resources.length)); add('GDP multiplier from resources', '×' + d.resMult.toFixed(2)); if (d.gdp) add('GDP now', fmtMoney(d.gdp)); }
+  if (key === 'region' || key === 'landlocked' || key === 'impact') { const g = REGIONS[R.picks.region]; if (g) add('Region', g.name); if (R.provs) add('Provinces held', String(R.provs.length)); }
+  if (key === 'ideology' || key === 'doctrine') { const g = IDEO[R.picks.ideology]; if (g) { add('State type', g.state); add('Formal name', `${g.pre} ${R.name}`); } }
+  if (key === 'army' && R.picks.army != null) add('Army quality', '×' + ARMY[R.picks.army].q);
+  if (key === 'bless' || key === 'curse' || key === 'background' || key === 'great') { if (d.area) add('Territory now', fmtKm(d.area)); if (d.pop) add('Population now', fmtPop(d.pop)); if (d.gdp) add('GDP now', fmtMoney(d.gdp)); if (d.troops) add('Troops now', fmtPop(d.troops)); }
+  return rows;
 }
 function advance() {
   if (R.phase !== 'landed') return;
@@ -1857,7 +1900,38 @@ const Events = (() => {
     R.log.push({ icon: '⚡', title: 'Triggered event', result: b.name, tier: null });
     saveDraft(); paintAll();
   }
+  function double() {
+    if (!R || R.phase === 'spinning') return msg('Wait for the wheel to stop.');
+    if (current().type === 'final' && R.saved) return msg('This country is saved. Start a new one first.');
+    const k = $('evStat').value, d = D(R);
+    let text;
+    if (k === 'hdi') {
+      if (d.hdi == null) return msg('Spin the HDI wheel first, then double it.');
+      R.mods.hdi += d.hdi; text = `HDI ${d.hdi.toFixed(2)} → ${D(R).hdi.toFixed(2)}${D(R).hdi >= .99 ? ' (max)' : ''}`;
+    } else if (k === 'intel') {
+      if (d.intel == null) return msg('Spin the spy wheel first, then double it.');
+      const lv = Math.min(INTEL_MAX, Math.max(1, d.intel * 2)); R.picks.intel = { level: lv, locked: true }; text = `Spy level ${d.intel} → ${lv}`;
+    } else {
+      const f = trackFx(() => { R.mods[k] *= 2; if (k === 'area') resizeTerritory(); }); text = f.text;
+    }
+    R.log.push({ icon: '✖️', title: 'Doubled', result: $('evStat').selectedOptions[0].text, tier: null });
+    msg('×2 · ' + text); saveDraft(); paintAll();
+    if (current().type === 'final') enterFinal();
+  }
+  let armed = 0;
+  async function reset(e) {
+    const b = e && e.currentTarget ? e.currentTarget : $('evReset');
+    if (Date.now() - armed > 4000) { armed = Date.now(); b.textContent = 'Click again: deletes every saved country'; setTimeout(() => { if (Date.now() - armed >= 4000) b.textContent = '🌍 Reset world & new map'; }, 4100); return; }
+    b.disabled = true; b.textContent = 'Building a new world…';
+    for (const n of Store.nations.slice()) { try { await Store.remove(n.id); } catch (e) { /* keep going */ } }
+    writeLocal([]); writePref('seed', String(1 + Math.floor(Math.random() * 2e9)));
+    try { localStorage.removeItem(DRAFT_KEY); } catch (e) { /* ignore */ }
+    location.reload();
+  }
   function init() {
+    $('evDouble').addEventListener('click', double);
+    $('evReset').addEventListener('click', reset);
+    $('worldReset').addEventListener('click', reset);
     $('evFx').innerHTML = fx.map(([i, b], k) => `<option value="${k}">${i} ${esc(b.name)} (${esc(b.text)})</option>`).join('');
     document.querySelectorAll('[data-ev]').forEach(el => el.addEventListener('click', () => { Sound.unlock(); wheel(el.dataset.ev); }));
     $('evGo').addEventListener('click', apply);
